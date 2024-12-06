@@ -1,59 +1,47 @@
 import express from "express";
 import dotenv from "dotenv";
 import cors from "cors";
-import connectDb from "./ConnectDb/connection.js";
 import Razorpay from "razorpay";
+import crypto from "crypto";
+import connectDb from './ConnectDb/connection.js';
 import Payment from "./Schema/payment.schema.js";
-import crypto from "crypto";  // Import crypto module for signature verification
 
 dotenv.config();
-
-// Razorpay instance initialization
-const instance = new Razorpay({
-  key_id: process.env.Razorpay_key,
-  key_secret: process.env.Razorpay_secret,
-});
 
 const app = express();
 app.use(express.json());
 app.use(cors());
+ connectDb()
+
+// Razorpay instance initialization
+const razorpayInstance = new Razorpay({
+  key_id: process.env.Razorpay_key,
+  key_secret: process.env.Razorpay_secret,
+});
 
 // Test route
 app.get("/", (req, res) => {
   res.status(200).json({ status: "OK" });
 });
 
-// Connect to MongoDB
-connectDb();
-
-// Create an Order
-// Create an Order
+// Create an Order route
 app.post("/create-order", async (req, res) => {
   const { amount, currency } = req.body;
 
   try {
     const options = {
-      amount: amount * 100, // Razorpay accepts amounts in paise
+      amount: amount * 100, // Convert to paise
       currency: currency || "INR",
     };
 
-    const order = await instance.orders.create(options);
+    const order = await razorpayInstance.orders.create(options);
 
-    // Save payment details in MongoDB (do not set paymentId here)
-    const newPayment = new Payment({
-      orderId: order.id,
-      amount: order.amount / 100, // Convert amount back to rupees
-      currency: order.currency,
-    });
-
-    await newPayment.save();
-
-    // Respond with order details
     res.status(201).json({
       success: true,
       order,
     });
   } catch (error) {
+    console.error("Error creating order:", error);
     res.status(500).json({
       success: false,
       message: error.message,
@@ -61,54 +49,46 @@ app.post("/create-order", async (req, res) => {
   }
 });
 
-
-// Verify Payment and Update Status
-// Verify Payment and Update Status
 app.post('/verify-payment', async (req, res) => {
   const { razorpay_payment_id, razorpay_order_id, razorpay_signature } = req.body;
 
-  // Log the payment id for debugging
-  console.log('Razorpay Payment ID:', razorpay_payment_id);
+  
 
-  // Retrieve Razorpay secret key from environment variables
-  const razorpay_secret = process.env.Razorpay_secret;
+  const razorpaySecret = process.env.Razorpay_secret;
 
-  // Generate signature using the razorpay_order_id and razorpay_payment_id
-  const generated_signature = crypto
-    .createHmac('sha256', razorpay_secret)
+
+  const generatedSignature = crypto
+    .createHmac('sha256', razorpaySecret)
     .update(`${razorpay_order_id}|${razorpay_payment_id}`)
     .digest('hex');
+ 
 
-  // Compare the generated signature with the one sent by Razorpay
-  if (generated_signature === razorpay_signature) {
-    // Signature matched, update payment status in the database
+  if (generatedSignature === razorpay_signature) {
     try {
-      const payment = await Payment.findOne({ orderId: razorpay_order_id });
+      const payment = new Payment({
+        paymentId: razorpay_payment_id,
+        orderId: razorpay_order_id,
+        amount: req.body.amount,
+        currency: req.body.currency || 'INR',
+        status: 'Paid',
+      });
+      
 
-      if (payment) {
-        // Update paymentId with the razorpay_payment_id
-        payment.paymentId = razorpay_payment_id;  // Only set the paymentId after verification
-        payment.status = 'Paid';  // Update payment status to 'Paid'
-        await payment.save();
+      await payment.save();
 
-        res.status(200).json({
-          success: true,
-          message: 'Payment verified and saved successfully',
-        });
-      } else {
-        res.status(404).json({
-          success: false,
-          message: 'Order not found in the database',
-        });
-      }
+      res.status(200).json({
+        success: true,
+        message: 'Payment verified and saved successfully',
+      });
     } catch (error) {
+      console.error('Error saving payment details to the database:', error);
       res.status(500).json({
         success: false,
-        message: error.message,
+        message: 'Failed to save payment details',
       });
     }
   } else {
-    // Signature mismatch, payment may be tampered
+    console.error('Payment signature verification failed');
     res.status(400).json({
       success: false,
       message: 'Payment signature verification failed',
@@ -117,10 +97,8 @@ app.post('/verify-payment', async (req, res) => {
 });
 
 
-  
 
-
-const PORT = process.env.PORT;
+const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });

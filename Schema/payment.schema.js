@@ -3,9 +3,9 @@ import mongoose from 'mongoose';
 const paymentSchema = new mongoose.Schema({
   paymentId: {
     type: String,
-    required: false, 
+    required: true, 
     unique: true,    
-    sparse: true, 
+    
   },
   orderId: {
     type: String,
